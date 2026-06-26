@@ -1,0 +1,49 @@
+# Smoke test — the fast gate. A couple of VUs for a few seconds, strict checks.
+# If this fails, the build is broken; don't bother running the heavier stages.
+#
+#   BASE_URL=http://localhost:8080 loadr run perf/smoke.yaml --junit smoke.xml
+name: smoke
+description: minimal sanity check across the core read paths
+
+defaults:
+  http:
+    base_url: ${env.BASE_URL}
+    timeout: 5s
+    headers:
+      User-Agent: loadr-demos/smoke
+
+scenarios:
+  sanity:
+    executor: constant-vus
+    vus: 2
+    duration: 15s
+    flow:
+      - request:
+          name: health
+          url: /healthz
+          checks:
+            - { type: status, equals: 200 }
+            - { type: jsonpath, name: reports ok, expression: "$.status", equals: ok }
+      - request:
+          name: ready
+          url: /readyz
+          checks:
+            - { type: status, equals: 200 }
+      - request:
+          name: list products
+          url: /api/products?limit=20
+          checks:
+            - { type: status, equals: 200 }
+            - { type: jsonpath, name: returns a page, expression: "$.count", equals: 20 }
+            - { type: duration, name: snappy, max: 300ms }
+      - request:
+          name: product detail
+          url: /api/products/1
+          checks:
+            - { type: status, equals: 200 }
+            - { type: jsonpath, name: has sku, expression: "$.sku", exists: true }
+
+thresholds:
+  http_req_failed: [ "rate<0.01" ]
+  http_req_duration: [ "p(95)<300" ]
+  checks: [ "rate>0.99" ]

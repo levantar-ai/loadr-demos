@@ -1,0 +1,37 @@
+# Stress test — ramp concurrency up past comfortable levels to find the knee.
+# Targets the CPU-bound /api/compute endpoint, whose latency climbs with load,
+# alongside catalog reads. The abort threshold kills the run if errors spike.
+name: stress
+description: ramp 0 -> 80 VUs against the CPU-bound path
+
+defaults:
+  http:
+    base_url: ${env.BASE_URL}
+    timeout: 15s
+
+scenarios:
+  ramp:
+    executor: ramping-vus
+    start_vus: 0
+    stages:
+      - { duration: 20s, target: 40 }   # warm up
+      - { duration: 30s, target: 80 }   # push past the knee
+      - { duration: 15s, target: 0 }    # ramp down
+    graceful_ramp_down: 5s
+    flow:
+      - request:
+          name: compute
+          url: "/api/compute?n=15000"
+          checks:
+            - { type: status, equals: 200 }
+      - request:
+          name: list
+          url: "/api/products?limit=50"
+          checks:
+            - { type: status, equals: 200 }
+
+thresholds:
+  http_req_failed:
+    - { threshold: "rate<0.05", abort_on_fail: true, delay_abort_eval: 15s }
+  http_req_duration: [ "p(95)<3000" ]
+  checks: [ "rate>0.95" ]

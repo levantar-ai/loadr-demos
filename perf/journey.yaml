@@ -1,0 +1,89 @@
+# End-to-end journey — a realistic authenticated user flow that chains requests
+# together. Shows off three loadr features at once:
+#   * data feeders   — each login pulls credentials from users.csv
+#   * extraction      — pull the bearer token + a sku + an order id from responses
+#   * correlation     — feed those values into later requests
+name: journey
+description: login -> browse -> create (auth) -> order -> verify
+
+defaults:
+  http:
+    base_url: ${env.BASE_URL}
+    timeout: 10s
+
+data:
+  users:
+    type: csv
+    path: data/users.csv     # relative to this plan file
+    mode: shared        # all VUs share one cursor
+    on_eof: recycle     # wrap around at end of file
+
+scenarios:
+  shopper:
+    executor: constant-vus
+    vus: 8
+    duration: 45s
+    think_time: { type: uniform, min: 100ms, max: 400ms }
+    flow:
+      - request:
+          name: login
+          method: POST
+          url: /api/auth/login
+          body:
+            json: { username: "${data.users.username}", password: "${data.users.password}" }
+          extract:
+            - { type: jsonpath, name: token, expression: "$.token" }
+          checks:
+            - { type: status, equals: 200 }
+            - { type: jsonpath, name: got token, expression: "$.token", exists: true }
+
+      - request:
+          name: browse
+          url: "/api/products?limit=20&offset=${js: Math.floor(Math.random()*5)*20}"
+          extract:
+            - { type: jsonpath, name: sku, expression: "$.products[0].sku" }
+          checks:
+            - { type: status, equals: 200 }
+
+      - request:
+          name: create product
+          method: POST
+          url: /api/products
+          headers:
+            Authorization: Bearer ${token}     # correlated from the login response
+          body:
+            json:
+              sku: "J-${js: Math.random().toString(36).slice(2, 10)}"
+              name: "Journey Item"
+              price_cents: 999
+              stock: 100
+          checks:
+            - { type: status, equals: 201 }
+
+      - request:
+          name: place order
+          method: POST
+          url: /api/orders
+          body:
+            json:
+              customer: "${data.users.username}"
+              items:
+                - { sku: "${sku}", qty: 1 }     # the sku we browsed
+          extract:
+            - { type: jsonpath, name: order_id, expression: "$.id" }
+          checks:
+            - { type: status, equals: 201 }
+            - { type: jsonpath, name: confirmed, expression: "$.status", equals: confirmed }
+
+      - request:
+          name: order status
+          url: /api/orders/${order_id}            # correlated from the order response
+          checks:
+            - { type: status, equals: 200 }
+            - { type: jsonpath, name: has id, expression: "$.id", exists: true }
+
+thresholds:
+  http_req_failed: [ "rate<0.01" ]
+  http_req_duration: [ "p(95)<600" ]
+  "http_req_duration{name:place order}": [ "p(95)<800" ]
+  checks: [ "rate>0.99" ]

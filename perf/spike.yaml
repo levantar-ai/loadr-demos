@@ -1,0 +1,43 @@
+# Spike test — a calm baseline, a sudden 10x surge of orders, then recovery.
+# Open model (ramping arrival rate): loadr fires N orders/sec regardless of how
+# fast the server responds, so a backlog shows up as latency + dropped
+# iterations. The abort threshold stops the run if the error rate runs away.
+name: spike
+description: 20 -> 200 orders/sec spike and recovery (open model)
+
+defaults:
+  http:
+    base_url: ${env.BASE_URL}
+    timeout: 10s
+
+scenarios:
+  surge:
+    executor: ramping-arrival-rate
+    start_rate: 20
+    time_unit: 1s
+    pre_allocated_vus: 50
+    max_vus: 300
+    stages:
+      - { duration: 20s, target: 20 }    # baseline
+      - { duration: 10s, target: 200 }   # spike!
+      - { duration: 30s, target: 200 }   # sustained surge
+      - { duration: 10s, target: 20 }    # drop back
+      - { duration: 20s, target: 20 }    # verify recovery
+    flow:
+      - request:
+          name: place order
+          method: POST
+          url: /api/orders
+          body:
+            json:
+              customer: "spike-${js: Math.floor(Math.random()*1000000)}"
+              items:
+                - { sku: "SKU-${js: String(1 + Math.floor(Math.random()*150)).padStart(4,'0')}", qty: 1 }
+          checks:
+            - { type: status, one_of: [201, 409] }   # 409 = item sold out under extreme load
+
+thresholds:
+  http_req_failed:
+    - { threshold: "rate<0.10", abort_on_fail: true, delay_abort_eval: 20s }
+  http_req_duration: [ "p(95)<2000" ]
+  dropped_iterations: [ "count<300" ]

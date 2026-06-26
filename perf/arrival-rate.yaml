@@ -1,0 +1,35 @@
+# Throughput test — pin a constant request rate (open model) and see whether
+# the service keeps up. Unlike a VU count, the arrival rate is independent of
+# response time, so saturation surfaces as `dropped_iterations` and rising p99.
+name: arrival-rate
+description: hold 150 req/s on read paths, watch for saturation
+
+defaults:
+  http:
+    base_url: ${env.BASE_URL}
+    timeout: 10s
+
+scenarios:
+  steady:
+    executor: constant-arrival-rate
+    rate: 150             # iterations per time_unit
+    time_unit: 1s
+    duration: 45s
+    pre_allocated_vus: 40
+    max_vus: 200
+    flow:
+      - request:
+          name: list
+          url: "/api/products?limit=20"
+          checks:
+            - { type: status, equals: 200 }
+      - request:
+          name: dependency
+          url: "/api/slow?ms=20"
+          checks:
+            - { type: status, equals: 200 }
+
+thresholds:
+  http_req_duration: [ "p(99)<500" ]
+  dropped_iterations: [ "count<50" ]
+  checks: [ "rate>0.99" ]

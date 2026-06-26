@@ -1,0 +1,44 @@
+# Load test — steady, representative browse traffic at a fixed concurrency.
+# This is the "does it hold up at expected load" baseline. Closed model:
+# 25 VUs loop through a browse journey with human-like think time.
+name: load
+description: 25 concurrent users browsing the catalog
+
+defaults:
+  http:
+    base_url: ${env.BASE_URL}
+    timeout: 10s
+    headers:
+      User-Agent: loadr-demos/load
+
+scenarios:
+  browse:
+    executor: constant-vus
+    vus: 25
+    duration: 45s
+    think_time: { type: uniform, min: 100ms, max: 500ms }
+    flow:
+      - request:
+          name: list
+          url: "/api/products?limit=20&offset=${js: Math.floor(Math.random()*5)*20}"
+          extract:
+            - { type: jsonpath, name: first_id, expression: "$.products[0].id" }
+          checks:
+            - { type: status, equals: 200 }
+      - request:
+          name: detail
+          url: /api/products/${first_id}
+          checks:
+            - { type: status, equals: 200 }
+            - { type: duration, name: detail fast, max: 400ms }
+      - request:
+          name: search
+          url: "/api/products?q=Widget&limit=10"
+          checks:
+            - { type: status, equals: 200 }
+
+thresholds:
+  http_req_failed: [ "rate<0.01" ]
+  http_req_duration: [ "p(95)<400", "p(99)<800" ]
+  "http_req_duration{name:detail}": [ "p(95)<300" ]   # tag-filtered: detail is hot
+  checks: [ "rate>0.99" ]

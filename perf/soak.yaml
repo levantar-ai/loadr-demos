@@ -1,0 +1,38 @@
+# Soak test — moderate, steady load held for a while to surface slow leaks,
+# connection-pool exhaustion or latency drift. Shortened to 2m so it fits a CI
+# run; in anger you'd hold this for hours.
+name: soak
+description: steady mixed load held for 2 minutes
+
+defaults:
+  http:
+    base_url: ${env.BASE_URL}
+    timeout: 10s
+
+scenarios:
+  soak:
+    executor: constant-vus
+    vus: 10
+    duration: 2m
+    think_time: { type: uniform, min: 200ms, max: 600ms }
+    flow:
+      - request:
+          name: list
+          url: "/api/products?limit=20"
+          checks:
+            - { type: status, equals: 200 }
+      - request:
+          name: detail
+          url: "/api/products/${js: 1 + Math.floor(Math.random()*150)}"
+          checks:
+            - { type: status, equals: 200 }
+      - request:
+          name: compute
+          url: "/api/compute?n=3000"
+          checks:
+            - { type: status, equals: 200 }
+
+thresholds:
+  http_req_failed: [ "rate<0.01" ]
+  http_req_duration: [ "avg<200", "p(95)<500" ]   # should stay flat over the run
+  checks: [ "rate>0.99" ]

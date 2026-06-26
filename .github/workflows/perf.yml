@@ -1,0 +1,145 @@
+name: Performance
+
+# Showcase of loadr in GitHub Actions.
+#
+#   build ──▶ perf (7 test types, in parallel) ──▶ report
+#
+# A single `build` job compiles the API once. The `perf` job then fans out into
+# a matrix — smoke, load, stress, spike, arrival-rate, soak, journey — that all
+# run **at the same time**, each on its own runner with its own throwaway
+# Postgres service container. Every job installs loadr via the first-party
+# action, runs one plan, emits a JUnit report (surfaced in the Checks tab) and a
+# JSON summary. A final `report` job stitches the summaries into one table.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write        # dorny/test-reporter publishes the JUnit results as checks
+
+jobs:
+  # ── Stage 1: build the API once and share the binary ──────────────────────
+  build:
+    name: build api
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - name: Build static binary
+        run: CGO_ENABLED=0 go build -trimpath -o loadr-demo-api ./cmd/api
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-binary
+          path: loadr-demo-api
+          retention-days: 1
+
+  # ── Stage 2: the perf matrix — all test types run in parallel ─────────────
+  perf:
+    name: ${{ matrix.test }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false       # one failing test type must not cancel the others
+      matrix:
+        test: [smoke, load, stress, spike, arrival-rate, soak, journey]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: demo
+          POSTGRES_PASSWORD: demo
+          POSTGRES_DB: storefront
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U demo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://demo:demo@localhost:5432/storefront?sslmode=disable
+      ADDR: ":8080"
+      BASE_URL: http://localhost:8080
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: api-binary
+
+      - name: Start the API
+        run: |
+          chmod +x loadr-demo-api
+          ./loadr-demo-api &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          # Wait for readiness (migrations + seed run on boot).
+          for i in $(seq 1 30); do
+            curl -fsS "$BASE_URL/readyz" && { echo; echo "API ready"; break; }
+            sleep 1
+          done
+
+      - name: Run loadr — ${{ matrix.test }}
+        uses: levantar-ai/loadr@v1
+        with:
+          plan: perf/${{ matrix.test }}.yaml
+          version: latest
+          junit: ${{ matrix.test }}-junit.xml
+          summary: ${{ matrix.test }}-summary.json
+
+      - name: Publish ${{ matrix.test }} report to Checks
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: perf · ${{ matrix.test }}
+          path: ${{ matrix.test }}-junit.xml
+          reporter: java-junit
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: summary-${{ matrix.test }}
+          path: ${{ matrix.test }}-summary.json
+          if-no-files-found: ignore
+
+      - name: Stop the API
+        if: always()
+        run: kill "${APP_PID}" 2>/dev/null || true
+
+  # ── Stage 3: aggregate every summary into one table on the run page ───────
+  report:
+    name: aggregate report
+    needs: perf
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: summary-*
+          path: summaries
+          merge-multiple: true
+      - name: Build combined summary
+        run: |
+          {
+            echo "## loadr — performance results"
+            echo
+            echo "| test | requests | failed | p95 (ms) | checks | thresholds |"
+            echo "|------|---------:|-------:|---------:|-------:|:----------:|"
+            for f in summaries/*.json; do
+              [ -e "$f" ] || continue
+              jq -r '
+                ([.metrics[]|select(.metric=="http_reqs")|.agg.count]|first // 0)        as $reqs |
+                ([.metrics[]|select(.metric=="http_req_failed")|.agg.rate]|first // 0)    as $fail |
+                ([.metrics[]|select(.metric=="http_req_duration")|.agg.p95]|first // 0)   as $p95  |
+                ([.metrics[]|select(.metric=="checks")|.agg.rate]|first // 0)             as $chk  |
+                "| \(.name) | \($reqs) | \((($fail*10000|round)/100))% | \(((($p95//0)*100|round)/100)) | \((($chk*10000|round)/100))% | \(if .thresholds_passed then "✅" else "❌" end) |"
+              ' "$f"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"

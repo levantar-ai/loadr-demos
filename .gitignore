@@ -1,0 +1,11 @@
+# build output
+/loadr-demo-api
+/dist/
+
+# loadr reports
+*-junit.xml
+*-summary.json
+
+# misc
+.env
+*.log
