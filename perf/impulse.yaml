@@ -1,0 +1,35 @@
+# Impulse test — the opposite of a ramp. Hit the service at FULL concurrency
+# from t=0, with a COLD cache, and watch the cold-start penalty.
+#
+# It targets /api/reports/top-sellers — an expensive aggregation cached in Redis
+# for 30s. Because the app starts with an empty cache, the first wave of 60
+# simultaneous VUs all miss and stampede the heavy query (40-way thundering herd):
+# latency spikes immediately, then collapses the instant the cache warms. The
+# response-time chart shows a sharp spike that decays — the impulse signature —
+# rather than the gentle climb of a ramp test.
+name: impulse
+description: 60 VUs from t=0 against a cold cache (no warm-up)
+
+defaults:
+  http:
+    base_url: ${env.BASE_URL}
+    timeout: 30s        # cold misses are slow; don't fail them as timeouts
+
+scenarios:
+  cold_start:
+    executor: constant-vus
+    vus: 40             # all 40 start at once — no ramp
+    duration: 30s
+    flow:
+      - request:
+          name: top sellers
+          url: /api/reports/top-sellers
+          checks:
+            - { type: status, equals: 200 }
+
+thresholds:
+  http_req_failed: [ "rate<0.01" ]
+  # No p95 budget here on purpose: the cold burst is *expected* to be slow.
+  # We assert the run completes cleanly and the cache eventually serves hits.
+  "http_req_duration{name:top sellers}": [ "p(99)<30000" ]
+  checks: [ "rate>0.99" ]

@@ -1,18 +1,26 @@
 # loadr-demos
 
-A complete, runnable example of performance testing a real service with
+A complete, runnable example of performance-testing a real service with
 [**loadr**](https://github.com/levantar-ai/loadr) inside GitHub Actions.
 
 It ships:
 
-- a small **Go + Postgres** storefront API (routes, a database, auth, an order
-  transaction, plus deliberate CPU-bound and slow endpoints), and
+- a small **Go + Postgres + Redis** storefront API (routes, a database, auth, an
+  order transaction, a cache-backed heavy report, plus deliberate CPU-bound and
+  slow endpoints), and
 - a **GitHub Actions** pipeline that builds the API once and then fans out into
-  **seven performance tests running in parallel** — each on its own runner with
-  its own throwaway Postgres — surfacing JUnit results in the Checks tab and a
-  combined table on the run summary.
+  **eight performance tests running in parallel** — each on its own runner with
+  its own throwaway Postgres + Redis — surfacing JUnit results in the Checks tab
+  and a combined table on the run summary.
 
-It's meant to be read, copied, and adapted.
+> [!IMPORTANT]
+> **This repository is for demonstration purposes only.** The app is a toy, the
+> thresholds are illustrative, and the test parameters are deliberately small so
+> the whole suite finishes in a few minutes on a free GitHub runner. It exists to
+> show *how* to wire loadr into CI and *what the different kinds of load test look
+> like* — not as a production service or a tuning baseline. The graphs below come
+> from local runs, so the **curve shapes are real but the absolute numbers
+> reflect the machine they ran on**, not your target environment.
 
 ---
 
@@ -23,64 +31,114 @@ It's meant to be read, copied, and adapted.
         │  build  │   compile the API once, share the binary
         └────┬────┘
              │
-   ┌─────────┼───────────────────────────────────────────────┐
-   ▼         ▼          ▼         ▼          ▼        ▼        ▼
- smoke     load      stress    spike   arrival-rate soak   journey     ← run in parallel,
-   │         │          │         │          │        │        │         each with its own
-   └─────────┴──────────┴────┬────┴──────────┴────────┴────────┘         Postgres service
-                             ▼
-                        ┌─────────┐
-                        │ report  │   one table, all results, on the run summary
-                        └─────────┘
+   ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┐
+   ▼     ▼     ▼     ▼     ▼     ▼     ▼     ▼
+ smoke load stress spike arrival soak journey impulse   ← run in parallel, each with
+   │     │     │     │   -rate   │     │     │             its own Postgres + Redis
+   └─────┴─────┴──┬──┴─────┴─────┴─────┴─────┘
+                  ▼
+             ┌─────────┐
+             │ report  │   one table, all results, on the run summary
+             └─────────┘
 ```
 
-Each perf job:
+Each perf job spins up `postgres:16` + `redis:7` **service containers**, starts
+the API (it migrates + seeds on boot), then installs and runs loadr via the
+first-party action:
 
-1. spins up a `postgres:16` **service container**,
-2. starts the API (it runs migrations + seeds the catalog on boot),
-3. installs and runs loadr via the first-party action:
+```yaml
+- uses: levantar-ai/loadr@v1
+  with:
+    plan: perf/${{ matrix.test }}.yaml
+    version: latest
+    junit: ${{ matrix.test }}-junit.xml
+    summary: ${{ matrix.test }}-summary.json
+```
 
-   ```yaml
-   - uses: levantar-ai/loadr@v1
-     with:
-       plan: perf/${{ matrix.test }}.yaml
-       version: latest
-       junit: ${{ matrix.test }}-junit.xml
-       summary: ${{ matrix.test }}-summary.json
-   ```
-4. publishes the JUnit report to the **Checks** tab (via `dorny/test-reporter`),
-5. uploads the JSON summary for the aggregate `report` job.
+It publishes the JUnit report to the **Checks** tab (`dorny/test-reporter`) and
+uploads the JSON summary for the aggregate `report` job. A breached
+[threshold](https://github.com/levantar-ai/loadr) fails the job (loadr exits
+non-zero), so a performance regression breaks the build like any other test.
+`fail-fast: false` means one failing test type never cancels the rest. See
+[`.github/workflows/perf.yml`](.github/workflows/perf.yml).
 
-A breached [threshold](https://github.com/levantar-ai/loadr) fails the job
-(loadr exits non-zero), so performance regressions break the build like any
-other test. `fail-fast: false` means one failing test type never cancels the
-rest.
-
-See [`.github/workflows/perf.yml`](.github/workflows/perf.yml).
+---
 
 ## The test types
 
-Every plan lives in [`perf/`](perf/) and targets a different executor / failure
-mode — together they cover the load-testing taxonomy:
+Eight plans (in [`perf/`](perf/)), each a different executor / failure mode.
+The graphs are loadr's own HTML-report charts; watch the **shape** — it's the
+fingerprint of each test.
 
-| Plan | Executor | What it proves |
-|------|----------|----------------|
-| [`smoke`](perf/smoke.yaml) | `constant-vus` (2 VUs, 15s) | fast sanity gate, strict checks |
-| [`load`](perf/load.yaml) | `constant-vus` (25 VUs) | steady expected traffic, p95/p99 budgets |
-| [`stress`](perf/stress.yaml) | `ramping-vus` (0→80) | find the knee on the CPU-bound path; `abort_on_fail` |
-| [`spike`](perf/spike.yaml) | `ramping-arrival-rate` (20→200/s) | sudden order surge + recovery (open model) |
-| [`arrival-rate`](perf/arrival-rate.yaml) | `constant-arrival-rate` (150/s) | throughput & saturation (`dropped_iterations`) |
-| [`soak`](perf/soak.yaml) | `constant-vus` (10, 2m) | latency drift / leaks under sustained load |
-| [`journey`](perf/journey.yaml) | `constant-vus` (8) | login → extract token → authed write → order → verify, with a CSV **data feeder** + **correlation** |
+### 🔹 smoke — the fast gate
+`constant-vus`, 2 VUs, 15s. A handful of requests across the core read paths
+with strict checks. If this fails the build is broken; the heavier stages don't
+bother running for real. Flat, minimal load.
 
-These show off loadr features you'll actually use: closed vs open models,
-ramping stages, think time, tag-filtered thresholds
-(`http_req_duration{name:detail}`), abort-on-fail, CSV feeders, response
-extraction (`jsonpath`/header) and request correlation, and JSON-body checks.
+![smoke](docs/graphs/smoke.png)
+
+### 🔹 load — steady expected traffic
+`constant-vus`, 25 VUs, 45s, with human-like think time. The "does it hold up at
+normal load" baseline — a flat plateau of concurrency browsing the catalog
+(list → detail → search). Asserts p95/p99 latency budgets.
+
+![load](docs/graphs/load.png)
+
+### 🔹 stress — find the knee
+`ramping-vus`, 0 → 40 → 80 → 0. A triangular ramp that pushes concurrency past
+comfortable levels against the CPU-bound `/api/compute` path to find where
+latency turns up. `abort_on_fail` kills the run if errors run away.
+
+![stress](docs/graphs/stress.png)
+
+### 🔹 spike — a sudden surge
+`ramping-arrival-rate`, 20 → **200** → 20 orders/sec (open model). A calm
+baseline, a sharp 10× spike of order writes, then recovery. The throughput chart
+shows the spike directly; latency balloons at the peak and should settle after.
+
+![spike](docs/graphs/spike.png)
+
+### 🔹 arrival-rate — throughput & saturation
+`constant-arrival-rate`, 150 req/s, 45s (open model). Pins a fixed request rate
+independent of response time, so saturation shows up as `dropped_iterations` and
+rising p99 rather than as fewer requests. A flat throughput line.
+
+![arrival-rate](docs/graphs/arrival-rate.png)
+
+### 🔹 soak — leaks & drift (mini soak)
+`constant-vus`, 10 VUs, **5 minutes**. Moderate steady load held long enough to
+surface slow leaks, connection-pool exhaustion or latency drift. The curve
+should stay flat for the whole run — drift is the smell. (In anger you'd hold
+this for hours; 5 min keeps CI honest.)
+
+![soak](docs/graphs/soak.png)
+
+### 🔹 journey — a realistic user flow
+`constant-vus`, 8 VUs. An end-to-end authenticated journey that chains requests:
+login → **extract** bearer token → browse → **correlate** a sku → create a
+product (authed) → place an order → verify it. Uses a CSV **data feeder** for
+credentials. This one is about features, not curve shape: feeders, extraction
+and correlation.
+
+![journey](docs/graphs/journey.png)
+
+### 🔹 impulse — cold-start under load
+`constant-vus`, **40 VUs from t=0, no ramp, cold cache**. The opposite of a ramp.
+It slams the expensive, Redis-cached `/api/reports/top-sellers` endpoint at full
+concurrency the instant the test starts. Because the cache is empty, all 40 VUs
+miss at once and stampede the heavy DB aggregation (a *thundering herd*):
+**throughput is pinned near zero while the herd is cold, then surges the moment
+the cache warms** — and latency spikes at t=0 and collapses. That sudden
+step-change, rather than a gentle climb, is the impulse signature.
+
+![impulse](docs/graphs/impulse.png)
+
+---
 
 ## The API
 
-A storefront on Go's standard-library router + Postgres (`pgx`).
+A storefront on Go's standard-library router, backed by Postgres (`pgx`) with an
+optional Redis cache.
 
 | Method & route | Description |
 |---|---|
@@ -90,35 +148,37 @@ A storefront on Go's standard-library router + Postgres (`pgx`).
 | `POST /api/products` | create a product — **requires `Authorization: Bearer …`** |
 | `POST /api/orders` | place an order — priced + stock-decremented in **one transaction** |
 | `GET /api/orders/{id}` | fetch an order + its line items |
+| `GET /api/reports/top-sellers` | **expensive aggregation, cached in Redis** (cold = slow DB query, warm = cache hit; `X-Cache: HIT/MISS`) |
 | `POST /api/auth/login` | returns a bearer token (demo auth) |
 | `GET /api/compute?n=` | CPU-bound (SHA-256 ×n) — latency rises with load |
 | `GET /api/slow?ms=` | controllable latency |
 
-Source: [`cmd/api`](cmd/api) (entrypoint), [`internal/server`](internal/server)
-(routes/handlers), [`internal/store`](internal/store) (Postgres, migrations,
-seed).
+Redis is optional: with no `REDIS_URL` the cache degrades to a no-op (every call
+is a miss) and everything still runs — the impulse test just won't show a warm
+phase. Source: [`cmd/api`](cmd/api), [`internal/server`](internal/server),
+[`internal/store`](internal/store), [`internal/cache`](internal/cache).
 
 ## Run it locally
 
 Prereqs: Go 1.24+, Docker, and the [loadr CLI](https://github.com/levantar-ai/loadr#install).
 
 ```bash
-make db                       # start Postgres in Docker
+make db                       # start Postgres + Redis in Docker
 make api                      # run the API on :8080 (migrates + seeds on boot)
 
 # in another shell — run a plan against it:
-make perf PLAN=smoke          # or: load, stress, spike, arrival-rate, soak, journey
+make perf PLAN=impulse        # or: smoke, load, stress, spike, arrival-rate, soak, journey
 make perf-all                 # run them all sequentially
 
 make test                     # go unit tests
-make clean                    # stop the DB, remove artifacts
+make clean                    # stop the services, remove artifacts
 ```
 
-Or drive loadr directly:
+Or drive loadr directly and open the same HTML report the graphs come from:
 
 ```bash
-BASE_URL=http://localhost:8080 loadr run perf/journey.yaml \
-  --junit journey-junit.xml --summary-export journey-summary.json
+BASE_URL=http://localhost:8080 loadr run perf/impulse.yaml --summary-export impulse.json
+loadr report impulse.json -o impulse.html && open impulse.html
 ```
 
 ## License

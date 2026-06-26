@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/levantar-ai/loadr-demos/internal/cache"
 	"github.com/levantar-ai/loadr-demos/internal/server"
 	"github.com/levantar-ai/loadr-demos/internal/store"
 )
@@ -24,6 +25,7 @@ func main() {
 
 	addr := getenv("ADDR", ":8080")
 	dsn := getenv("DATABASE_URL", "postgres://demo:demo@localhost:5432/storefront?sslmode=disable")
+	redisURL := os.Getenv("REDIS_URL") // optional: enables the top-sellers cache
 
 	ctx := context.Background()
 	st, err := store.New(ctx, dsn)
@@ -32,6 +34,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer st.Close()
+
+	c := cache.New(ctx, redisURL)
+	logger.Info("cache", "enabled", c.Enabled())
 
 	if err := st.Migrate(ctx); err != nil {
 		logger.Error("migrate failed", "err", err)
@@ -44,7 +49,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(st, logger),
+		Handler:           server.New(st, c, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

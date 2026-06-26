@@ -5,11 +5,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
 
 // ErrNotFound is returned when a row does not exist.
 var ErrNotFound = errors.New("not found")
@@ -176,6 +187,57 @@ func (s *Store) CreateOrder(ctx context.Context, customer string, items []OrderI
 		return nil, err
 	}
 	return o, nil
+}
+
+// TopSeller is one row of the top-sellers report.
+type TopSeller struct {
+	SKU      string `json:"sku"`
+	Name     string `json:"name"`
+	Units    int64  `json:"units"`
+	Revenue  int64  `json:"revenue_cents"`
+}
+
+// reportWork sets how much deterministic CPU the cold report burns in Postgres
+// (md5 over generate_series). Sized so a single cold call is a few hundred ms,
+// and a cold stampede of concurrent calls saturates the DB — the whole point of
+// the impulse test. Overridable via REPORT_WORK for tuning.
+var reportWork = envInt("REPORT_WORK", 800_000)
+
+// TopSellers returns a top-sellers report. It's deliberately expensive: first it
+// burns real CPU in the database (so a cold cache under load hurts and a warm
+// cache obviously helps), then it runs the actual aggregation across orders.
+func (s *Store) TopSellers(ctx context.Context, limit int) ([]TopSeller, error) {
+	// Heavy, un-optimisable compute — this is what makes a cold miss slow.
+	var sink int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT sum(length(md5(g::text))) FROM generate_series(1, $1) g`, reportWork).
+		Scan(&sink); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT p.sku, p.name,
+		       sum(oi.qty)                 AS units,
+		       sum(oi.qty * oi.price_cents) AS revenue
+		FROM order_items oi
+		JOIN products p ON p.sku = oi.sku
+		GROUP BY p.sku, p.name
+		ORDER BY revenue DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]TopSeller, 0, limit)
+	for rows.Next() {
+		var t TopSeller
+		if err := rows.Scan(&t.SKU, &t.Name, &t.Units, &t.Revenue); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // GetOrder fetches an order and its line items.
