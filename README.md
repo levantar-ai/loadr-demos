@@ -26,21 +26,11 @@ It ships:
 
 ## The pipeline
 
-```
-        ┌─────────┐
-        │  build  │   compile the API once, share the binary
-        └────┬────┘
-             │
-   ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┐
-   ▼     ▼     ▼     ▼     ▼     ▼     ▼     ▼
- smoke load stress spike arrival soak journey impulse   ← run in parallel, each with
-   │     │     │     │   -rate   │     │     │             its own Postgres + Redis
-   └─────┴─────┴──┬──┴─────┴─────┴─────┴─────┘
-                  ▼
-             ┌─────────┐
-             │ report  │   one table, all results, on the run summary
-             └─────────┘
-```
+![loadr performance pipeline](docs/diagrams/pipeline.png)
+
+A single `build` job compiles the API once; the `perf` matrix then runs all
+eight test types **in parallel** (each on its own runner with its own Postgres +
+Redis), and a final `report` job stitches the summaries together.
 
 Each perf job spins up `postgres:16` + `redis:7` **service containers**, starts
 the API (it migrates + seeds on boot), then installs and runs loadr via the
@@ -90,6 +80,15 @@ comfortable levels against the CPU-bound `/api/compute` path to find where
 latency turns up. `abort_on_fail` kills the run if errors run away.
 
 ![stress](docs/graphs/stress.png)
+
+> **Why does throughput stay flat while VUs and latency climb?** That flat line
+> *is* the result. The server saturates early (~10 VUs maxes the CPU and the
+> 20-connection DB pool), so it can't *complete* requests any faster — throughput
+> pins at its ceiling (~2.2k req/s here). Every extra VU past that knee doesn't
+> add throughput, it just joins the queue, so response time rises instead. It's
+> Little's Law — `concurrency = throughput × latency`: with throughput capped,
+> driving concurrency up forces latency up. Finding that knee is the point of a
+> stress test.
 
 ### 🔹 spike — a sudden surge
 `ramping-arrival-rate`, 20 → **200** → 20 orders/sec (open model). A calm
