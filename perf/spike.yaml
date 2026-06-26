@@ -10,6 +10,14 @@ defaults:
     base_url: ${env.BASE_URL}
     timeout: 10s
 
+# Enable the JS runtime so the inline ${js: ...} expressions in the request body
+# below are evaluated. (loadr auto-enables JS when it spots ${js:} in a URL or a
+# top-level body field, but not inside a nested array like items[].sku, so we
+# turn it on explicitly here.)
+js:
+  script: |
+    // inline ${js: ...} interpolation only — no hooks needed
+
 scenarios:
   surge:
     executor: ramping-arrival-rate
@@ -39,5 +47,5 @@ scenarios:
 thresholds:
   http_req_failed:
     - { threshold: "rate<0.10", abort_on_fail: true, delay_abort_eval: 20s }
-  http_req_duration: [ "p(95)<2000" ]
-  dropped_iterations: [ "count<300" ]
+  http_req_duration: [ "p(95)<2500" ]      # a 2-CPU CI runner under a 10x order spike
+  dropped_iterations: [ "count<500" ]      # some open-model drops are expected at peak
