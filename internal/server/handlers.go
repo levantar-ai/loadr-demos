@@ -122,6 +122,41 @@ func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, o)
 }
 
+// topSellers returns an expensive aggregation, cached in Redis. A cold cache
+// means every concurrent request runs the heavy query (a "thundering herd"),
+// which is exactly what the impulse test exercises: high concurrency from t=0
+// with nothing warm. The X-Cache header reports HIT/MISS.
+func (s *Server) topSellers(w http.ResponseWriter, r *http.Request) {
+	const key = "report:top-sellers"
+
+	if cached, ok := s.cache.Get(r.Context(), key); ok {
+		w.Header().Set("X-Cache", "HIT")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(cached))
+		return
+	}
+
+	rows, err := s.store.TopSellers(r.Context(), 10)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "report query failed")
+		return
+	}
+	body, err := json.Marshal(map[string]any{"cached": false, "top_sellers": rows})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "encode failed")
+		return
+	}
+	// Cache the warm payload (with cached:true) for the next 30s.
+	warm, _ := json.Marshal(map[string]any{"cached": true, "top_sellers": rows})
+	s.cache.Set(r.Context(), key, string(warm), 30*time.Second)
+
+	w.Header().Set("X-Cache", "MISS")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
 // login is a deliberately simple demo auth endpoint: any username with a
 // non-empty password gets a bearer token. It exists so load tests can show a
 // realistic login -> extract token -> authenticated request flow.

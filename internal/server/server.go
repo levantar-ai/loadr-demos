@@ -6,18 +6,20 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/levantar-ai/loadr-demos/internal/cache"
 	"github.com/levantar-ai/loadr-demos/internal/store"
 )
 
 // Server holds the dependencies shared by the handlers.
 type Server struct {
 	store  *store.Store
+	cache  cache.Cache
 	logger *slog.Logger
 }
 
 // New builds the HTTP handler (router + middleware).
-func New(st *store.Store, logger *slog.Logger) http.Handler {
-	s := &Server{store: st, logger: logger}
+func New(st *store.Store, c cache.Cache, logger *slog.Logger) http.Handler {
+	s := &Server{store: st, cache: c, logger: logger}
 
 	mux := http.NewServeMux()
 
@@ -35,6 +37,9 @@ func New(st *store.Store, logger *slog.Logger) http.Handler {
 	// Orders.
 	mux.HandleFunc("POST /api/orders", s.createOrder)
 	mux.HandleFunc("GET /api/orders/{id}", s.getOrder)
+
+	// Expensive, cache-backed report (cold = slow DB aggregation, warm = cache).
+	mux.HandleFunc("GET /api/reports/top-sellers", s.topSellers)
 
 	// Auth.
 	mux.HandleFunc("POST /api/auth/login", s.login)

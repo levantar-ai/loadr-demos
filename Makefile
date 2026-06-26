@@ -11,8 +11,8 @@ help:
 db: ## start local Postgres (docker compose)
 	docker compose up -d
 
-api: ## run the API against the local DB on :8080
-	DATABASE_URL="$(DATABASE_URL)" ADDR=":8080" go run ./cmd/api
+api: ## run the API against the local DB + Redis on :8080
+	DATABASE_URL="$(DATABASE_URL)" REDIS_URL="redis://localhost:6379" ADDR=":8080" go run ./cmd/api
 
 test: ## run unit tests
 	go test ./... -race
@@ -21,7 +21,7 @@ perf: ## run one plan, e.g. make perf PLAN=journey   (needs the loadr CLI + a ru
 	BASE_URL="$(BASE_URL)" loadr run perf/$(PLAN).yaml --junit $(PLAN)-junit.xml --summary-export $(PLAN)-summary.json
 
 perf-all: ## run every plan sequentially
-	@for p in smoke load stress spike arrival-rate soak journey; do \
+	@for p in smoke load stress spike arrival-rate soak journey impulse; do \
 		echo "== $$p =="; BASE_URL="$(BASE_URL)" loadr run perf/$$p.yaml || exit 1; \
 	done
 

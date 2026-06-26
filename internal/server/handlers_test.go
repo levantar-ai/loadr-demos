@@ -1,18 +1,21 @@
 package server
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/levantar-ai/loadr-demos/internal/cache"
 )
 
-// newTestServer builds the handler with a nil store; the routes exercised here
-// never touch the database.
+// newTestServer builds the handler with a nil store and a no-op cache; the
+// routes exercised here never touch the database or Redis.
 func newTestServer() http.Handler {
-	return New(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return New(nil, cache.New(context.Background(), ""), slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestHealthz(t *testing.T) {

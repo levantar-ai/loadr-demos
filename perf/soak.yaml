@@ -1,8 +1,8 @@
 # Soak test — moderate, steady load held for a while to surface slow leaks,
-# connection-pool exhaustion or latency drift. Shortened to 2m so it fits a CI
-# run; in anger you'd hold this for hours.
+# connection-pool exhaustion or latency drift. A 5-minute "mini soak" for CI;
+# in anger you'd hold this for hours.
 name: soak
-description: steady mixed load held for 2 minutes
+description: steady mixed load held for 5 minutes (mini soak)
 
 defaults:
   http:
@@ -13,7 +13,7 @@ scenarios:
   soak:
     executor: constant-vus
     vus: 10
-    duration: 2m
+    duration: 5m
     think_time: { type: uniform, min: 200ms, max: 600ms }
     flow:
       - request:
