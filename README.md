@@ -67,12 +67,21 @@ bother running for real. Flat, minimal load.
 
 ![smoke](docs/graphs/smoke.png)
 
+> **Reading the chart:** a flat trickle — Active VUs pinned at 2, throughput and
+> latency sitting on the floor. There's deliberately no load profile here; a
+> green run is the whole signal.
+
 ### 🔹 load — steady expected traffic
 `constant-vus`, 25 VUs, 45s, with human-like think time. The "does it hold up at
 normal load" baseline — a flat plateau of concurrency browsing the catalog
 (list → detail → search). Asserts p95/p99 latency budgets.
 
 ![load](docs/graphs/load.png)
+
+> **Reading the chart:** a steady plateau — Active VUs flat at 25, throughput
+> flat, and the latency percentiles holding a low, level band. This is what
+> "comfortable, expected traffic" looks like; you're checking the band stays
+> under budget.
 
 ### 🔹 stress — find the knee
 `ramping-vus`, 0 → 40 → 80 → 0. A triangular ramp that pushes concurrency past
@@ -97,12 +106,22 @@ shows the spike directly; latency balloons at the peak and should settle after.
 
 ![spike](docs/graphs/spike.png)
 
+> **Reading the chart:** watch **Throughput** — a calm ~20/s baseline, a sharp
+> jump to ~200/s, a sustained peak, then a drop back and recovery. Response-time
+> p99 lifts during the surge and settles afterwards. (Active VUs is flat because
+> this is an open model — VUs are pre-allocated; the *arrival rate* is what
+> spikes.)
+
 ### 🔹 arrival-rate — throughput & saturation
 `constant-arrival-rate`, 150 req/s, 45s (open model). Pins a fixed request rate
 independent of response time, so saturation shows up as `dropped_iterations` and
 rising p99 rather than as fewer requests. A flat throughput line.
 
 ![arrival-rate](docs/graphs/arrival-rate.png)
+
+> **Reading the chart:** **Throughput** holds a flat line at the target 150/s
+> regardless of latency — that's the open model. Saturation would show up as a
+> rising p99 and `dropped_iterations`, not as a sagging throughput line.
 
 ### 🔹 soak — leaks & drift (mini soak)
 `constant-vus`, 10 VUs, **5 minutes**. Moderate steady load held long enough to
@@ -112,6 +131,10 @@ this for hours; 5 min keeps CI honest.)
 
 ![soak](docs/graphs/soak.png)
 
+> **Reading the chart:** the point is that nothing moves — throughput and latency
+> stay level across the full 5 minutes. An upward drift in latency, a sawtooth,
+> or a creeping error rate would betray a leak or pool exhaustion; here it's flat.
+
 ### 🔹 journey — a realistic user flow
 `constant-vus`, 8 VUs. An end-to-end authenticated journey that chains requests:
 login → **extract** bearer token → browse → **correlate** a sku → create a
@@ -120,6 +143,11 @@ credentials. This one is about features, not curve shape: feeders, extraction
 and correlation.
 
 ![journey](docs/graphs/journey.png)
+
+> **Reading the chart:** concurrency is flat (8 VUs), so the curves are steady —
+> this test is about the chained steps (login → browse → create → order →
+> verify), not the shape. Throughput counts whole multi-request iterations, so
+> it reads lower than the single-hit tests.
 
 ### 🔹 impulse — cold-start under load
 `constant-vus`, **40 VUs from t=0, no ramp, cold cache**. The opposite of a ramp.
@@ -132,7 +160,37 @@ step-change, rather than a gentle climb, is the impulse signature.
 
 ![impulse](docs/graphs/impulse.png)
 
+> **Reading the chart:** the cold-start signature. **Throughput** is pinned near
+> zero for the first few seconds while 40 cold VUs stampede the heavy query, then
+> surges the instant the cache warms. **Active VUs** jump straight to 40 (no
+> ramp), and **Response time** spikes at t=0 then collapses as hits start serving
+> from Redis.
+
 ---
+
+## A note on the numbers (GitHub Actions limits)
+
+Treat the **absolute throughput and latency figures as artifacts of the runner,
+not the app's real capacity.** A GitHub-hosted runner is a small, shared,
+virtualised box (≈2 vCPU). In every perf job, the **load generator (loadr), the
+API, Postgres _and_ Redis all run on that same 2-core runner** and fight for the
+same cores — so:
+
+- **loadr's own load generation steals CPU from the server.** Past a low
+  concurrency the runner itself is the bottleneck, not the application. A high
+  p99 can mean the loadr client was starved, not that the server was slow.
+- **Throughput plateaus early and low.** The ~2k req/s you see in `stress`, or
+  the impulse surge numbers, are where *this box* tops out, not where the code
+  would on real, separate hardware.
+- **Numbers vary run-to-run** with noisy neighbours on the shared host.
+
+What *is* meaningful here: the **shapes** (ramp, spike, cold-start), the
+**relative** behaviour between phases, and whether the **thresholds pass** — i.e.
+catching regressions in CI. For real capacity planning you'd run loadr from a
+**separate machine** (or a distributed loadr run) against a production-sized
+target, with the database and cache on their own hosts. The graphs in this README
+were rendered from local runs for the same reason — cleaner shapes — and still
+carry the same caveat about absolute values.
 
 ## The API
 
