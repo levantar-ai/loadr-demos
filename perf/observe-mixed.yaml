@@ -1,0 +1,73 @@
+# Load↔system correlation demo for loadr's `observe:` block.
+#
+# A mixed workload (browse + orders + cache + compute) that exercises CPU, the
+# database and the cache at once, with six system metrics pulled from Prometheus
+# and overlaid on the run timeline. Each `observe` metric becomes its own
+# auto-scaled panel in the HTML report alongside the load charts.
+#
+#   make db && docker compose -f observe/docker-compose.yml up -d && make api
+#   loadr run perf/observe-mixed.yaml --summary-export observe.json
+#   loadr report observe.json -o observe.html && open observe.html
+#
+# NOTE: requires a loadr build with `observe:` support (the released CLI rejects
+# the unknown block). Not part of the CI perf matrix for that reason.
+name: observe-mixed
+description: mixed workload with full system-metric correlation
+
+defaults:
+  http: { base_url: http://localhost:8080, timeout: 30s }
+
+observe:
+  - { name: cpu busy,        type: prometheus, source: http://localhost:9090, as: system_cpu,        unit: ratio,
+      query: '1 - avg(rate(node_cpu_seconds_total{mode="idle"}[20s]))' }
+  - { name: memory used,     type: prometheus, source: http://localhost:9090, as: memory_used_ratio, unit: ratio,
+      query: '1 - node_memory_MemAvailable_bytes/node_memory_MemTotal_bytes' }
+  - { name: load average 1m, type: prometheus, source: http://localhost:9090, as: load1,
+      query: 'node_load1' }
+  - { name: pg connections,  type: prometheus, source: http://localhost:9090, as: pg_connections,
+      query: 'sum(pg_stat_database_numbackends{datname="storefront"})' }
+  - { name: pg commits/s,    type: prometheus, source: http://localhost:9090, as: pg_commits_per_sec,
+      query: 'rate(pg_stat_database_xact_commit{datname="storefront"}[20s])' }
+  - { name: redis ops/s,     type: prometheus, source: http://localhost:9090, as: redis_ops_per_sec,
+      query: 'rate(redis_commands_processed_total[20s])' }
+
+scenarios:
+  browse:
+    executor: ramping-vus
+    start_vus: 0
+    stages: [ { duration: 40s, target: 30 }, { duration: 35s, target: 30 } ]
+    flow:
+      - request: { name: list, url: "/api/products?limit=20&offset=${js: Math.floor(Math.random()*5)*20}", checks: [ { type: status, equals: 200 } ] }
+      - request: { name: detail, url: "/api/products/${js: 1+Math.floor(Math.random()*150)}", checks: [ { type: status, equals: 200 } ] }
+  orders:
+    executor: constant-arrival-rate
+    rate: 25
+    time_unit: 1s
+    duration: 75s
+    pre_allocated_vus: 30
+    max_vus: 80
+    flow:
+      - request:
+          name: order
+          method: POST
+          url: /api/orders
+          body: { json: { customer: "obs", items: [ { sku: "SKU-0001", qty: 1 } ] } }
+          checks: [ { type: status, one_of: [201, 409] } ]
+  cache:
+    executor: constant-vus
+    vus: 6
+    duration: 75s
+    flow:
+      - request: { name: top sellers, url: /api/reports/top-sellers, checks: [ { type: status, equals: 200 } ] }
+  compute:
+    executor: constant-vus
+    vus: 5
+    duration: 75s
+    flow:
+      - request: { name: compute, url: "/api/compute?n=18000", checks: [ { type: status, equals: 200 } ] }
+
+thresholds:
+  http_req_failed: [ "rate<0.05" ]
+  # Gate the run on the *target's* health, not just client-side SLOs:
+  "system_cpu":     [ "max<0.98" ]   # don't fully peg the box
+  "pg_connections": [ "max<90" ]     # stay under the pool ceiling

@@ -238,6 +238,37 @@ BASE_URL=http://localhost:8080 loadr run perf/impulse.yaml --summary-export impu
 loadr report impulse.json -o impulse.html && open impulse.html
 ```
 
+## Correlating with system metrics (`observe`)
+
+A load test tells you *how fast*; it doesn't tell you *why it stopped scaling*.
+loadr's [`observe:`](perf/observe-mixed.yaml) block pulls **system metrics** in
+for the run window and overlays them on the result timeline — so you see the
+load and the target's CPU / memory / DB / cache **on one page**.
+
+This demo wires up the sidecars (node + Postgres + Redis exporters → Prometheus)
+and runs a mixed workload that exercises every subsystem at once:
+
+```bash
+make db                         # postgres + redis
+make observe-up                 # node/postgres/redis exporters + Prometheus
+make api                        # app on :8080
+make observe                    # run perf/observe-mixed.yaml + write observe.html
+```
+
+The report then shows six extra **auto-scaled panels** beside the load charts —
+`system_cpu`, `memory_used_ratio`, `load1`, `pg_connections`, `pg_commits_per_sec`,
+`redis_ops_per_sec` — and the run can even be **gated on the target's health**:
+
+```yaml
+thresholds:
+  system_cpu:     [ "max<0.98" ]   # fail the run if the box pegs
+  pg_connections: [ "max<90" ]     # ...or the pool is exhausted
+```
+
+> Requires a loadr build with `observe:` support. It's omitted from the CI perf
+> matrix because the released CLI rejects the (then-unknown) block; run it
+> locally with a current build. `make observe-down` stops the sidecars.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Built to demonstrate
