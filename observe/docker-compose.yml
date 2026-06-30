@@ -1,0 +1,39 @@
+# Observability sidecars for the load↔system correlation demo.
+#
+# Brings up node_exporter (host CPU/mem/load), postgres_exporter and
+# redis_exporter, and a Prometheus that scrapes all three. It assumes the demo's
+# Postgres + Redis are already up on localhost (via `make db`) — the exporters
+# use host networking and connect over localhost, and Prometheus scrapes them on
+# localhost too. loadr's `observe:` block then queries this Prometheus.
+#
+#   make db                                      # postgres + redis
+#   docker compose -f observe/docker-compose.yml up -d
+#   make api                                     # app on :8080
+#   loadr run perf/observe-mixed.yaml --summary-export out.json
+#   loadr report out.json -o out.html && open out.html
+services:
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:latest
+    network_mode: host
+    pid: host
+    command: ["--path.rootfs=/host"]
+    volumes:
+      - "/:/host:ro,rslave"
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    network_mode: host
+    environment:
+      DATA_SOURCE_NAME: "postgresql://demo:demo@localhost:5432/storefront?sslmode=disable"
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    network_mode: host
+    environment:
+      REDIS_ADDR: "redis://localhost:6379"
+
+  prometheus:
+    image: prom/prometheus:latest
+    network_mode: host
+    volumes:
+      - "./prometheus.yml:/etc/prometheus/prometheus.yml"

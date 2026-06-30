@@ -1,5 +1,5 @@
 # loadr-demos — local development helpers.
-.PHONY: help db api test perf perf-all clean
+.PHONY: help db api test perf perf-all observe-up observe-down observe clean
 
 DATABASE_URL ?= postgres://demo:demo@localhost:5432/storefront?sslmode=disable
 BASE_URL     ?= http://localhost:8080
@@ -25,6 +25,18 @@ perf-all: ## run every plan sequentially
 		echo "== $$p =="; BASE_URL="$(BASE_URL)" loadr run perf/$$p.yaml || exit 1; \
 	done
 
-clean: ## stop the DB and remove build/report artifacts
+observe-up: ## start the observe sidecars (node/postgres/redis exporters + Prometheus); needs `make db` first
+	docker compose -f observe/docker-compose.yml up -d
+
+observe-down: ## stop the observe sidecars
+	docker compose -f observe/docker-compose.yml down
+
+observe: ## run the load↔system correlation demo and write observe.html (needs a loadr build with `observe:` + observe-up + api)
+	BASE_URL="$(BASE_URL)" loadr run perf/observe-mixed.yaml --summary-export observe.json
+	loadr report observe.json -o observe.html
+	@echo "open observe.html"
+
+clean: ## stop the DB + observe sidecars and remove build/report artifacts
 	docker compose down -v
-	rm -f loadr-demo-api *-junit.xml *-summary.json
+	docker compose -f observe/docker-compose.yml down 2>/dev/null || true
+	rm -f loadr-demo-api *-junit.xml *-summary.json observe.json observe.html
