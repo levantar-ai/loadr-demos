@@ -171,7 +171,7 @@ jobs:
           loadr plugin install postgres
 
       - name: Run the postgres-plugin perf test
-        run: loadr run perf/plugin-postgres.yaml --junit plugin-postgres-junit.xml --summary plugin-postgres-summary.json
+        run: loadr run perf/plugin-postgres.yaml --junit plugin-postgres-junit.xml --summary-export plugin-postgres-summary.json
 
       - name: Publish plugin report to Checks
         uses: dorny/test-reporter@v1
