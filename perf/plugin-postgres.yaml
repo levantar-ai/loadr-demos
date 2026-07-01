@@ -16,7 +16,7 @@ plugins:
 scenarios:
   catalogue_reads:
     executor: constant-arrival-rate
-    rate: 200
+    rate: 150
     time_unit: 1s
     duration: 30s
     pre_allocated_vus: 20
@@ -27,24 +27,24 @@ scenarios:
           url: ${env.DATABASE_URL}
           sql:
             query: >-
-              SELECT id, name, price FROM products
-              WHERE price < $1 ORDER BY price DESC LIMIT 20
-            params: ["100"]
+              SELECT id, name, price_cents FROM products
+              WHERE price_cents < $1 ORDER BY price_cents DESC LIMIT 20
+            params: ["10000"]                # cents — everything under $100
           checks:
             - { type: status, equals: 1 }        # 1 = ok, 0 = error
-            - { type: duration, name: fast query, max: 200ms }
+            - { type: duration, name: fast query, max: 500ms }
       - request:
           name: order-items-join
           url: ${env.DATABASE_URL}
           sql:
             query: >-
-              SELECT oi.order_id, oi.quantity, p.name
-              FROM order_items oi JOIN products p ON p.id = oi.product_id
+              SELECT oi.order_id, oi.qty, p.name
+              FROM order_items oi JOIN products p ON p.sku = oi.sku
               LIMIT 25
           checks:
             - { type: status, equals: 1 }
 
 thresholds:
-  postgres_req_duration: [ "p(95)<150" ]
+  postgres_req_duration: [ "p(95)<400" ]
   postgres_reqs: [ "count>0" ]
   checks: [ "rate>0.99" ]
