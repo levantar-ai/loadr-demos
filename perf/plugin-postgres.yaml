@@ -1,0 +1,50 @@
+# Plugin showcase — load-test PostgreSQL *directly* with the postgres plugin.
+#
+# Every other perf test in this repo drives the Go API over HTTP. This one skips
+# the app entirely and hammers the same Postgres the app uses: the parameterised
+# query IS the request, pooled per VU. Install the driver first:
+#
+#   loadr plugin install postgres
+#   DATABASE_URL=postgres://demo:demo@localhost:5432/storefront?sslmode=disable \
+#     loadr run perf/plugin-postgres.yaml
+name: plugin-postgres
+description: drive the storefront Postgres directly via the postgres plugin
+
+plugins:
+  - name: postgres          # resolves postgres:// at runtime (loadr plugin install postgres)
+
+scenarios:
+  catalogue_reads:
+    executor: constant-arrival-rate
+    rate: 200
+    time_unit: 1s
+    duration: 30s
+    pre_allocated_vus: 20
+    max_vus: 80
+    flow:
+      - request:
+          name: top-products
+          url: ${env.DATABASE_URL}
+          sql:
+            query: >-
+              SELECT id, name, price FROM products
+              WHERE price < $1 ORDER BY price DESC LIMIT 20
+            params: ["100"]
+          checks:
+            - { type: status, equals: 1 }        # 1 = ok, 0 = error
+            - { type: duration, name: fast query, max: 200ms }
+      - request:
+          name: order-items-join
+          url: ${env.DATABASE_URL}
+          sql:
+            query: >-
+              SELECT oi.order_id, oi.quantity, p.name
+              FROM order_items oi JOIN products p ON p.id = oi.product_id
+              LIMIT 25
+          checks:
+            - { type: status, equals: 1 }
+
+thresholds:
+  postgres_req_duration: [ "p(95)<150" ]
+  postgres_reqs: [ "count>0" ]
+  checks: [ "rate>0.99" ]

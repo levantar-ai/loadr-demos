@@ -122,6 +122,72 @@ jobs:
         if: always()
         run: kill "${APP_PID}" 2>/dev/null || true
 
+  # ── Stage 2b: plugin showcase — drive Postgres directly, no app ───────────
+  plugins:
+    name: plugin · postgres
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: demo
+          POSTGRES_PASSWORD: demo
+          POSTGRES_DB: storefront
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U demo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://demo:demo@localhost:5432/storefront?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: api-binary
+
+      # The plugin test drives Postgres directly, but the app owns the schema —
+      # boot it once so migrations + seed create products/orders/order_items,
+      # then stop it and let loadr hit the tables straight over the wire.
+      - name: Seed the schema (migrations run on boot)
+        run: |
+          chmod +x loadr-demo-api
+          ADDR=":8080" ./loadr-demo-api &
+          pid=$!
+          for i in $(seq 1 30); do curl -fsS http://localhost:8080/readyz && break; sleep 1; done
+          kill "$pid" 2>/dev/null || true
+
+      - name: Install loadr + the postgres plugin
+        run: |
+          curl -fsSL -o loadr.tar.gz \
+            https://github.com/levantar-ai/loadr/releases/latest/download/loadr-x86_64-unknown-linux-gnu.tar.gz
+          tar xzf loadr.tar.gz
+          sudo install -m 0755 loadr /usr/local/bin/loadr
+          loadr --version
+          loadr plugin install postgres
+
+      - name: Run the postgres-plugin perf test
+        run: loadr run perf/plugin-postgres.yaml --junit plugin-postgres-junit.xml --summary plugin-postgres-summary.json
+
+      - name: Publish plugin report to Checks
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: perf · plugin-postgres
+          path: plugin-postgres-junit.xml
+          reporter: java-junit
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plugin-postgres-summary
+          path: plugin-postgres-summary.json
+          if-no-files-found: ignore
+
   # ── Stage 3: aggregate every summary into one table on the run page ───────
   report:
     name: aggregate report
