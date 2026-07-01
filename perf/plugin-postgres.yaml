@@ -24,7 +24,7 @@ scenarios:
     flow:
       - request:
           name: top-products
-          url: ${env.DATABASE_URL}
+          url: postgres://demo:demo@localhost:5432/storefront?sslmode=disable
           sql:
             query: >-
               SELECT id, name, price_cents FROM products
@@ -35,7 +35,7 @@ scenarios:
             - { type: duration, name: fast query, max: 500ms }
       - request:
           name: order-items-join
-          url: ${env.DATABASE_URL}
+          url: postgres://demo:demo@localhost:5432/storefront?sslmode=disable
           sql:
             query: >-
               SELECT oi.order_id, oi.qty, p.name
