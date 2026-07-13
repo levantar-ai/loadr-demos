@@ -22,6 +22,11 @@ It ships:
 > from local runs, so the **curve shapes are real but the absolute numbers
 > reflect the machine they ran on**, not your target environment.
 
+> [!TIP]
+> Prefer a GUI? Every plan in this repo also has a **[loadr Desktop
+> walkthrough](desktop/)** — the plan on the drag-and-drop canvas, every node's
+> form, and a live run with its verdict, one screenshot per step.
+
 ---
 
 ## The pipeline
